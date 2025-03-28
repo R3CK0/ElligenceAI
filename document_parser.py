@@ -17,38 +17,34 @@ from pdf_parser import PDFParser
 import win32com.client
 import pythoncom
 import time
+import fitz  # PyMuPDF
+import pythonpptx
 
 class DocumentParser:
     def __init__(self):
         # Google Docs API setup
-        self.SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-        self.creds = None
+        self.SCOPES = ['https://www.googleapis.com/auth/documents.readonly']
+        self.credentials = None
         self.service = None
-        self._setup_google_docs()
+        self._setup_google_auth()
         self.pdf_parser = PDFParser()
     
-    def _setup_google_docs(self):
-        """Set up Google Docs API credentials."""
-        try:
-            # Load credentials from secrets
-            if os.path.exists('token.json'):
-                self.creds = Credentials.from_authorized_user_file('token.json', self.SCOPES)
+    def _setup_google_auth(self):
+        """Set up Google Docs API authentication."""
+        if os.path.exists('token.json'):
+            self.credentials = Credentials.from_authorized_user_file('token.json', self.SCOPES)
+        
+        if not self.credentials or not self.credentials.valid:
+            if self.credentials and self.credentials.expired and self.credentials.refresh_token:
+                self.credentials.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', self.SCOPES)
+                self.credentials = flow.run_local_server(port=0)
             
-            if not self.creds or not self.creds.valid:
-                if self.creds and self.creds.expired and self.creds.refresh_token:
-                    self.creds.refresh(Request())
-                else:
-                    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', self.SCOPES)
-                    self.creds = flow.run_local_server(port=0)
-                
-                # Save the credentials for the next run
-                with open('token.json', 'w') as token:
-                    token.write(self.creds.to_json())
-            
-            self.service = build('docs', 'v1', credentials=self.creds)
-        except Exception as e:
-            print(f"Warning: Google Docs setup failed: {e}")
-            self.service = None
+            with open('token.json', 'w') as token:
+                token.write(self.credentials.to_json())
+        
+        self.service = build('docs', 'v1', credentials=self.credentials)
     
     def parse_document(self, file_path: Path, file_type: str) -> List[Dict]:
         """Parse a document based on its type."""
@@ -58,110 +54,57 @@ class DocumentParser:
             elif file_type.lower() == '.txt':
                 return self._parse_txt(file_path)
             elif file_type.lower() == '.pptx':
-                return self._convert_and_parse_pptx(file_path)
+                return self._parse_pptx(file_path)
             elif file_type.lower() == '.gdoc':
-                return self._parse_google_doc(file_path)
+                return self._parse_gdoc(file_path)
+            elif file_type.lower() == '.pdf':
+                return self._parse_pdf(file_path)
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
         except Exception as e:
             print(f"Error parsing document {file_path}: {e}")
             return []
     
-    def _convert_pptx_to_pdf(self, pptx_path: Path) -> Path:
-        """Convert PowerPoint to PDF using PowerPoint COM automation."""
-        try:
-            # Initialize COM
-            pythoncom.CoInitialize()
-            
-            # Create temporary PDF path
-            pdf_path = pptx_path.with_suffix('.pdf')
-            
-            # Create PowerPoint application object
-            powerpoint = win32com.client.Dispatch("PowerPoint.Application")
-            powerpoint.Visible = True
-            
-            # Open the presentation
-            presentation = powerpoint.Presentations.Open(str(pptx_path.absolute()))
-            
-            # Save as PDF
-            presentation.SaveAs(str(pdf_path.absolute()), 32)  # 32 is the PDF format code
-            
-            # Close presentation and PowerPoint
-            presentation.Close()
-            powerpoint.Quit()
-            
-            # Clean up COM
-            pythoncom.CoUninitialize()
-            
-            return pdf_path
-            
-        except Exception as e:
-            print(f"Error converting PowerPoint to PDF: {e}")
-            raise
-    
-    def _convert_and_parse_pptx(self, pptx_path: Path) -> List[Dict]:
-        """Convert PowerPoint to PDF and parse it using PDFParser."""
-        try:
-            # Convert to PDF
-            pdf_path = self._convert_pptx_to_pdf(pptx_path)
-            
-            # Parse the PDF
-            chunks = self.pdf_parser.process_pdf(pdf_path)
-            
-            # Clean up temporary PDF file
-            pdf_path.unlink()
-            
-            return chunks
-            
-        except Exception as e:
-            print(f"Error processing PowerPoint file: {e}")
-            return []
-    
-    def _create_chunk_with_overlap(self, content: List[str], page_number: int, 
-                                 current_word_count: int, max_words_per_chunk: int = 1000,
-                                 overlap_words: int = 200) -> List[Dict]:
-        """Create chunks with overlap from content."""
+    def _parse_pdf(self, file_path: Path) -> List[Dict]:
+        """Parse PDF file using PyMuPDF."""
         chunks = []
-        current_chunk = []
-        current_word_count = 0
+        doc = fitz.open(file_path)
         
-        for paragraph in content:
-            words = paragraph.split()
-            current_word_count += len(words)
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            text = page.get_text()
             
-            if current_word_count >= max_words_per_chunk:
-                # Create a new chunk
-                chunks.append({
-                    "content": " ".join(current_chunk),
-                    "page_number": page_number,
-                    "uuid": str(uuid.uuid4()),
-                    "created_at": datetime.now(UTC).isoformat()
-                })
-                
-                # Keep the last few paragraphs for overlap
-                overlap_text = []
-                overlap_word_count = 0
-                for p in reversed(current_chunk):
-                    p_words = p.split()
-                    if overlap_word_count + len(p_words) <= overlap_words:
-                        overlap_text.insert(0, p)
-                        overlap_word_count += len(p_words)
-                    else:
-                        break
-                
-                current_chunk = overlap_text
-                current_word_count = overlap_word_count
-            
-            current_chunk.append(paragraph)
+            # Create chunks with overlap
+            chunks.extend(self._create_chunk_with_overlap(
+                text=text,
+                page_number=page_num + 1,
+                source_file=file_path.name
+            ))
         
-        # Add the last chunk if it exists
-        if current_chunk:
-            chunks.append({
-                "content": " ".join(current_chunk),
-                "page_number": page_number,
-                "uuid": str(uuid.uuid4()),
-                "created_at": datetime.now(UTC).isoformat()
-            })
+        doc.close()
+        return chunks
+    
+    def _parse_pptx(self, file_path: Path) -> List[Dict]:
+        """Parse PowerPoint file using python-pptx."""
+        chunks = []
+        prs = Presentation(file_path)
+        
+        for slide_num, slide in enumerate(prs.slides, 1):
+            # Extract text from all shapes in the slide
+            slide_text = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    slide_text.append(shape.text)
+            
+            # Join all text with newlines
+            text = "\n".join(slide_text)
+            
+            # Create chunks with overlap
+            chunks.extend(self._create_chunk_with_overlap(
+                text=text,
+                page_number=slide_num,
+                source_file=file_path.name
+            ))
         
         return chunks
     
@@ -182,46 +125,55 @@ class DocumentParser:
         
         return self._create_chunk_with_overlap(paragraphs, 1)
     
-    def _parse_google_doc(self, file_path: Path) -> List[Dict]:
-        """Parse a Google Doc with overlapping chunks."""
-        if not self.service:
-            raise ValueError("Google Docs service not initialized")
-        
-        try:
-            # Extract document ID from the file path or content
-            doc_id = self._extract_doc_id(file_path)
-            
-            # Get the document content
-            document = self.service.documents().get(documentId=doc_id).execute()
-            
-            # Extract paragraphs
-            paragraphs = []
-            for element in document.get('body').get('content'):
-                if 'paragraph' in element:
-                    paragraph = element.get('paragraph')
-                    text = self._extract_text_from_paragraph(paragraph)
-                    if text.strip():
-                        paragraphs.append(text)
-            
-            return self._create_chunk_with_overlap(paragraphs, 1)
-            
-        except Exception as e:
-            print(f"Error parsing Google Doc: {e}")
-            return []
-    
-    def _extract_text_from_paragraph(self, paragraph: Dict) -> str:
-        """Extract text from a Google Docs paragraph element."""
-        text = ""
-        for element in paragraph.get('elements', []):
-            if 'textRun' in element:
-                text += element['textRun'].get('content', '')
-        return text
-    
-    def _extract_doc_id(self, file_path: Path) -> str:
-        """Extract Google Doc ID from file path or content."""
+    def _parse_gdoc(self, file_path: Path) -> List[Dict]:
+        """Parse Google Doc file."""
+        # Extract document ID from the file content
         with open(file_path, 'r') as f:
-            content = f.read()
-            return content.strip()
+            doc_data = json.load(f)
+            doc_id = doc_data.get('doc_id')
+        
+        if not doc_id:
+            raise ValueError("No document ID found in the Google Doc file")
+        
+        # Get the document content
+        document = self.service.documents().get(documentId=doc_id).execute()
+        
+        # Extract text content
+        text = ""
+        for element in document.get('body', {}).get('content', []):
+            if 'paragraph' in element:
+                for para_element in element['paragraph']['elements']:
+                    if 'textRun' in para_element:
+                        text += para_element['textRun']['content']
+                text += "\n"
+        
+        return self._create_chunk_with_overlap(
+            text=text,
+            page_number=1,
+            source_file=file_path.name
+        )
+    
+    def _create_chunk_with_overlap(self, text: str, page_number: int, source_file: str) -> List[Dict]:
+        """Create chunks with overlap from text."""
+        chunks = []
+        words = text.split()
+        chunk_size = 1000  # words per chunk
+        overlap = 200  # words overlap
+        
+        for i in range(0, len(words), chunk_size - overlap):
+            chunk_words = words[i:i + chunk_size]
+            chunk_text = " ".join(chunk_words)
+            
+            chunks.append({
+                "content": chunk_text,
+                "page_number": page_number,
+                "uuid": str(uuid.uuid4()),
+                "source_file": source_file,
+                "word_count": len(chunk_words),
+                "created_at": datetime.now().isoformat()
+            })
+        
+        return chunks
 
 def main():
     # Example usage
@@ -232,7 +184,8 @@ def main():
         ("example.docx", ".docx"),
         ("example.txt", ".txt"),
         ("example.pptx", ".pptx"),
-        ("example.gdoc", ".gdoc")
+        ("example.gdoc", ".gdoc"),
+        ("example.pdf", ".pdf")
     ]
     
     for file_name, file_type in test_files:
@@ -244,7 +197,7 @@ def main():
             for i, chunk in enumerate(chunks, 1):
                 print(f"\nChunk {i}:")
                 print(f"Page: {chunk['page_number']}")
-                print(f"Word count: {len(chunk['content'].split())}")
+                print(f"Word count: {chunk['word_count']}")
                 print(f"Preview: {chunk['content'][:100]}...")
 
 if __name__ == "__main__":
