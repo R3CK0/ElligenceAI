@@ -11,35 +11,36 @@ from datetime import datetime
 import uuid
 from openai import OpenAI
 import tempfile
+from weaviateUploader import WeaviateUploader
+from pdf_parser import PDFParser
 import hashlib
 
-# Load environment variables
-load_dotenv(override=True)
+# Get admin credentials from TOML secrets
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD_HASH = st.secrets["users"]["admin"]
 
 # Initialize OpenAI client
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai_client = OpenAI(api_key=st.secrets["environment"]["OPENAI_API_KEY"])
 
 # Initialize Weaviate client
 client = weaviate.connect_to_weaviate_cloud(
-    cluster_url=os.getenv("WEAVIATE_URL"),
-    auth_credentials=Auth.api_key(os.getenv("WEAVIATE_API_KEY")),
+    cluster_url=st.secrets["environment"]["WEAVIATE_URL"],
+    auth_credentials=Auth.api_key(st.secrets["environment"]["WEAVIATE_API_KEY"]),
     headers={
-        "X-OpenAI-Api-Key": os.getenv("OPENAI_API_KEY")
+        "X-OpenAI-Api-Key": st.secrets["environment"]["OPENAI_API_KEY"]
     }
 )
 
-# User credentials (in production, use a secure database)
-USERS = {
-    "admin": hashlib.sha256("your_secure_password".encode()).hexdigest()
-}
+# Initialize WeaviateUploader
+weaviate_uploader = WeaviateUploader()
 
 def check_password():
     """Returns `True` if the user had the correct password."""
-
+    
     def password_entered():
         """Checks whether a password entered by the user is correct."""
-        if hashlib.sha256(st.session_state["username"].encode()).hexdigest() in USERS and \
-           hashlib.sha256(st.session_state["password"].encode()).hexdigest() == USERS[hashlib.sha256(st.session_state["username"].encode()).hexdigest()]:
+        if st.session_state["username"] == ADMIN_USERNAME and \
+           hashlib.sha256(st.session_state["password"].encode()).hexdigest() == ADMIN_PASSWORD_HASH:
             st.session_state["password_correct"] = True
             del st.session_state["password"]  # Don't store password
         else:
@@ -55,6 +56,40 @@ def check_password():
     if "password_correct" in st.session_state:
         st.error("😕 User not known or password incorrect")
     return False
+
+def process_and_upload_file(file_path: Path, file_type: str) -> bool:
+    """Process and upload a file to Weaviate."""
+    try:
+        if file_type.lower() == 'pdf':
+            # Process PDF file
+            parser = PDFParser()
+            chunks = parser.process_pdf(file_path)
+            
+            # Upload each chunk to Weaviate
+            for chunk in chunks:
+                weaviate_uploader.upload_text_file(
+                    content=chunk["content"],
+                    source_file=file_path.name,
+                    page_number=chunk["page_number"],
+                    chunk_uuid=chunk["uuid"]
+                )
+        else:
+            # Process text file
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            # Upload to Weaviate
+            weaviate_uploader.upload_text_file(
+                content=content,
+                source_file=file_path.name,
+                page_number=1,
+                chunk_uuid=str(uuid.uuid4())
+            )
+        
+        return True
+    except Exception as e:
+        st.error(f"Error processing file {file_path.name}: {str(e)}")
+        return False
 
 def reformat_query(query: str) -> str:
     """Use GPT-4 to reformat the query to better understand user intent."""
@@ -82,7 +117,7 @@ def reformat_query(query: str) -> str:
         st.error(f"Error reformatting query: {e}")
         return query
 
-def search_relevant_sections(query: str, limit: int = 15) -> List[Dict[str, str]]:
+def search_relevant_sections(query: str, limit: int = 5) -> List[Dict[str, str]]:
     """Search for relevant sections using semantic search."""
     try:
         # First reformat the query
@@ -129,8 +164,7 @@ def analyze_and_summarize(sections: List[Dict[str, str]], query: str) -> Dict[st
         prompt = f"""Given the following retrieved sections and the user's question, analyze the content and provide:
         1. A concise summary of the relevant information
         2. A strategy for answering the question
-        
-        In the case where the information is not present, simply return "Not enough information in the database to answer the question".
+        3. Whether the necessary information is present to answer the question
         
         User Question: {query}
         
@@ -142,10 +176,10 @@ def analyze_and_summarize(sections: List[Dict[str, str]], query: str) -> Dict[st
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are an expert at analyzing information from retrieved sections and formulating answer strategies."},
+                {"role": "system", "content": "You are an expert at analyzing information and formulating answer strategies."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=750
+            max_tokens=500
         )
         
         analysis = response.choices[0].message.content.strip()
@@ -194,7 +228,7 @@ def generate_answer(question: str, sections: List[Dict[str, str]], analysis: Dic
         Please provide a direct answer to the question:"""
         
         response = openai_client.chat.completions.create(
-            model="o3-mini",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are an expert at providing clear and accurate answers based on available information."},
                 {"role": "user", "content": prompt}
@@ -259,23 +293,12 @@ def main():
                     tmp_file.write(uploaded_file.getvalue())
                     tmp_file_path = Path(tmp_file.name)
                 
-                # Upload to Weaviate
                 try:
-                    with open(tmp_file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    
-                    # Upload to Weaviate
-                    client.collections.get("TextChunk").data.insert({
-                        "content": content,
-                        "source_file": uploaded_file.name,
-                        "created_at": datetime.now().isoformat(),
-                        "word_count": len(content.split()),
-                        "chunk_uuid": str(uuid.uuid4())
-                    })
-                    
-                    st.success(f"Successfully uploaded {uploaded_file.name}")
-                except Exception as e:
-                    st.error(f"Error uploading {uploaded_file.name}: {str(e)}")
+                    # Process and upload the file
+                    if process_and_upload_file(tmp_file_path, Path(uploaded_file.name).suffix):
+                        st.success(f"Successfully processed and uploaded {uploaded_file.name}")
+                    else:
+                        st.error(f"Failed to process {uploaded_file.name}")
                 finally:
                     # Clean up temporary file
                     os.unlink(tmp_file_path)
@@ -337,4 +360,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-    client.close() 
+    client.close()
+    weaviate_uploader.close() 
