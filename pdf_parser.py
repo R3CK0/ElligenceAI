@@ -308,18 +308,18 @@ class PDFParser:
         
         return results
 
-def main():
-    # Create parser instance
-    parser = PDFParser()
+# def main():
+#     # Create parser instance
+#     parser = PDFParser()
     
-    # Process all PDFs in the input directory
-    results = parser.process_directory()
+#     # Process all PDFs in the input directory
+#     results = parser.process_directory()
     
-    # Print summary
-    for pdf_name, chunks in results.items():
-        print(f"\nSummary for {pdf_name}:")
-        print(f"Total chunks: {len(chunks)}")
-        print(f"Total pages with images: {sum(1 for chunk in chunks if chunk['image_path'] is not None)}")
+#     # Print summary
+#     for pdf_name, chunks in results.items():
+#         print(f"\nSummary for {pdf_name}:")
+#         print(f"Total chunks: {len(chunks)}")
+#         print(f"Total pages with images: {sum(1 for chunk in chunks if chunk['image_path'] is not None)}")
 
-if __name__ == "__main__":
-    main() 
+# if __name__ == "__main__":
+#     main() 

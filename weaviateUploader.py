@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 from typing import List, Dict, Optional
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 import uuid
 from openai import OpenAI
 import streamlit as st
@@ -14,13 +14,13 @@ import streamlit as st
 class WeaviateUploader:
     def __init__(self):
         # Get Weaviate URL and format it correctly
-        weaviate_url = st.secrets["environment"]["WEAVIATE_URL"]
+        
         #if not weaviate_url.endswith(".weaviate.cloud"):
         #    weaviate_url = f"https://{weaviate_url}.weaviate.cloud"
         
         # Initialize Weaviate client
         self.client = weaviate.connect_to_weaviate_cloud(
-            cluster_url=weaviate_url,
+            cluster_url= st.secrets["environment"]["WEAVIATE_URL"],
             auth_credentials=Auth.api_key(st.secrets["environment"]["WEAVIATE_API_KEY"]),
             headers={
                 "X-OpenAI-Api-Key": st.secrets["environment"]["OPENAI_API_KEY"]
@@ -36,10 +36,9 @@ class WeaviateUploader:
             # Check if the collection exists
             if not self.client.collections.exists("TextChunk"):
                 # Define the schema
-                class_obj = {
-                    "class": "TextChunk",
-                    "description": "A chunk of text from a document",
-                    "properties": [
+                self.client.collections.create(
+                    "TextChunk",
+                    properties= [
                         Property(
                             name="content",
                             data_type=DataType.TEXT,
@@ -71,11 +70,9 @@ class WeaviateUploader:
                             description="When the chunk was created"
                         )
                     ],
-                    "vectorizer": "text2vec-openai"
-                }
+                    vectorizer_config= Configure.Vectorizer.text2vec_openai()
+                )
                 
-                # Create the collection
-                self.client.collections.create(class_obj)
                 print("Created TextChunk collection")
             else:
                 print("TextChunk collection already exists")
@@ -97,7 +94,7 @@ class WeaviateUploader:
                 "page_number": page_number,
                 "chunk_uuid": chunk_uuid,
                 "word_count": len(content.split()),
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now(UTC).isoformat()
             }
             
             # Insert the data object
@@ -134,17 +131,17 @@ class WeaviateUploader:
         if hasattr(self, 'client'):
             self.client.close()
 
-if __name__ == "__main__":
-    # Example usage
-    uploader = WeaviateUploader()
+# if __name__ == "__main__":
+#     # Example usage
+#     uploader = WeaviateUploader()
     
-    # Upload a single file
-    with open("example.txt", "r", encoding="utf-8") as f:
-        content = f.read()
-    uploader.upload_text_file(content, "example.txt")
+#     # Upload a single file
+#     with open("example.txt", "r", encoding="utf-8") as f:
+#         content = f.read()
+#     uploader.upload_text_file(content, "example.txt")
     
-    # Upload all files in a directory
-    results = uploader.upload_directory("documents")
-    print(f"Upload results: {results}")
+#     # Upload all files in a directory
+#     results = uploader.upload_directory("documents")
+#     print(f"Upload results: {results}")
     
-    uploader.close() 
+#     uploader.close() 

@@ -12,27 +12,31 @@ import uuid
 from openai import OpenAI
 import tempfile
 from weaviateUploader import WeaviateUploader
-from pdf_parser import PDFParser
+from document_parser import DocumentParser
 import hashlib
 
 # Get admin credentials from TOML secrets
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD_HASH = st.secrets["users"]["admin"]
 
+# Load environment variables
+load_dotenv(override=True)
+
 # Initialize OpenAI client
-openai_client = OpenAI(api_key=st.secrets["environment"]["OPENAI_API_KEY"])
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Initialize Weaviate client
 client = weaviate.connect_to_weaviate_cloud(
-    cluster_url=st.secrets["environment"]["WEAVIATE_URL"],
-    auth_credentials=Auth.api_key(st.secrets["environment"]["WEAVIATE_API_KEY"]),
+    cluster_url=os.getenv("WEAVIATE_URL"),
+    auth_credentials=Auth.api_key(os.getenv("WEAVIATE_API_KEY")),
     headers={
-        "X-OpenAI-Api-Key": st.secrets["environment"]["OPENAI_API_KEY"]
+        "X-OpenAI-Api-Key": os.getenv("OPENAI_API_KEY")
     }
 )
 
-# Initialize WeaviateUploader
+# Initialize WeaviateUploader and DocumentParser
 weaviate_uploader = WeaviateUploader()
+document_parser = DocumentParser()
 
 def check_password():
     """Returns `True` if the user had the correct password."""
@@ -57,33 +61,26 @@ def check_password():
         st.error("😕 User not known or password incorrect")
     return False
 
-def process_and_upload_file(file_path: Path, file_type: str) -> bool:
+def process_and_upload_file(file_path: Path) -> bool:
     """Process and upload a file to Weaviate."""
     try:
-        if file_type.lower() == 'pdf':
-            # Process PDF file
-            parser = PDFParser()
-            chunks = parser.process_pdf(file_path)
-            
-            # Upload each chunk to Weaviate
-            for chunk in chunks:
-                weaviate_uploader.upload_text_file(
-                    content=chunk["content"],
-                    source_file=file_path.name,
-                    page_number=chunk["page_number"],
-                    chunk_uuid=chunk["uuid"]
-                )
-        else:
-            # Process text file
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            # Upload to Weaviate
+        # Get file extension
+        file_type = file_path.suffix.lower()
+        
+        # Parse the document based on its type
+        chunks = document_parser.parse_document(file_path, file_type)
+        
+        if not chunks:
+            st.error(f"No content could be extracted from {file_path.name}")
+            return False
+        
+        # Upload each chunk to Weaviate
+        for chunk in chunks:
             weaviate_uploader.upload_text_file(
-                content=content,
+                content=chunk["content"],
                 source_file=file_path.name,
-                page_number=1,
-                chunk_uuid=str(uuid.uuid4())
+                page_number=chunk["page_number"],
+                chunk_uuid=chunk["uuid"]
             )
         
         return True
@@ -282,7 +279,7 @@ def main():
         st.header("Upload Documents")
         uploaded_files = st.file_uploader(
             "Choose files to upload",
-            type=["txt", "pdf"],
+            type=["txt", "pdf", "docx", "pptx", "gdoc"],
             accept_multiple_files=True
         )
         
@@ -295,7 +292,7 @@ def main():
                 
                 try:
                     # Process and upload the file
-                    if process_and_upload_file(tmp_file_path, Path(uploaded_file.name).suffix):
+                    if process_and_upload_file(tmp_file_path):
                         st.success(f"Successfully processed and uploaded {uploaded_file.name}")
                     else:
                         st.error(f"Failed to process {uploaded_file.name}")
