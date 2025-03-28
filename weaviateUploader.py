@@ -15,8 +15,8 @@ class WeaviateUploader:
     def __init__(self):
         # Get Weaviate URL and format it correctly
         weaviate_url = st.secrets["environment"]["WEAVIATE_URL"]
-        if not weaviate_url.endswith(".weaviate.cloud"):
-            weaviate_url = f"https://{weaviate_url}.weaviate.cloud"
+        #if not weaviate_url.endswith(".weaviate.cloud"):
+        #    weaviate_url = f"https://{weaviate_url}.weaviate.cloud"
         
         # Initialize Weaviate client
         self.client = weaviate.connect_to_weaviate_cloud(
@@ -47,7 +47,7 @@ class WeaviateUploader:
                         ),
                         Property(
                             name="source_file",
-                            data_type=DataType.STRING,
+                            data_type=DataType.TEXT,
                             description="The source file name"
                         ),
                         Property(
@@ -57,7 +57,7 @@ class WeaviateUploader:
                         ),
                         Property(
                             name="chunk_uuid",
-                            data_type=DataType.STRING,
+                            data_type=DataType.TEXT,
                             description="Unique identifier for the chunk"
                         ),
                         Property(
