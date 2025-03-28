@@ -3,22 +3,16 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import docx
 from pptx import Presentation
-import tempfile
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import io
 import json
 from datetime import datetime, UTC
 import uuid
 from pdf_parser import PDFParser
-import win32com.client
-import pythoncom
-import time
 import fitz  # PyMuPDF
-import pythonpptx
 
 class DocumentParser:
     def __init__(self):
